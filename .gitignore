@@ -1,0 +1,29 @@
+# Dependências e compilação TypeScript
+node_modules/
+out/
+*.vsix
+
+# Logs, cache e artefatos temporários
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+
+# Segredos, variáveis de ambiente e tokens locais
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*secret*
+*token*
+*credentials*
+
+# Dados de teste / caches locais
+.vscode-test/
+coverage/
