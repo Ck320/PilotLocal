@@ -2,7 +2,7 @@
 Extensão para VSCodium para utilização de IA local  
 
 ## Contexto  
-A extensão `PilotLocal` é um complemento para o **VSCodium** (ou VS Code) que permite integrar modelos de inteligência artificial **locais** (como Ollama, LLaMA, etc.) ao ambiente de desenvolvimento. Ela oferece funcionalidades para:  
+A extensão **`PilotLocal`** é um complemento para o **VSCodium** (ou VS Code) que permite integrar modelos de inteligência artificial **locais** (como Ollama, LLaMA, etc.) ao ambiente de desenvolvimento. Ela oferece funcionalidades para:  
 - **Interagir com modelos de IA** via chat, incluindo a menção de arquivos específicos no código (`@arquivo.ts`)  
 - **Gerenciar histórico de conversas** com o modelo  
 - **Executar comandos personalizados** para manipulação de arquivos e IA  
@@ -27,9 +27,12 @@ A extensão é desenvolvida em **TypeScript** e utiliza a API do VS Code para in
 - **Comunicação com o backend:** O webview envia mensagens ao backend da extensão para processar comandos (ex: enviar prompt ao modelo).  
 
 ### 4. **Comandos e Funcionalidades**  
-- **`Ollama: Adicionar ao Chat`:** Permite selecionar arquivos do projeto e adicioná-los ao chat para contextualizar a IA.  
-- **`Ollama: Limpar Histórico do Chat`:** Remove o histórico de conversas para reiniciar a interação.  
-- **`Ollama: Executar Comando`:** Executa ações personalizadas, como gerar código ou analisar arquivos.  
+| Comando | Descrição |
+|---------|-----------|
+| `Ollama: Adicionar ao Chat` | Permite selecionar arquivos do projeto e adicioná-los ao chat para contextualizar a IA. |
+| `Ollama: Limpar Histórico do Chat` | Remove o histórico de conversas para reiniciar a interação. |
+| `Ollama: Executar Comando` | Executa ações personalizadas, como gerar código ou analisar arquivos. |
+| `PilotLocal: Configurar Ollama` | Define endpoint do modelo e parâmetros de API. |
 
 ---
 
@@ -43,5 +46,5 @@ A extensão é desenvolvida em **TypeScript** e utiliza a API do VS Code para in
 ---
 
 ## Instalação  
-1. **Clone o repositório:**  
-   
+
+### 1. **Clone do Repositório**  
