@@ -73,6 +73,42 @@ const MAX_FOLDER_FILES = 15;
 const MAX_FILE_CHARS = 12000;
 const MAX_TOTAL_CONTEXT_CHARS = 45000;
 
+function isLikelyEmbeddingModel(modelName: string): boolean {
+  return /(embed|bge-|e5-|minilm|snowflake-arctic-embed)/i.test(modelName);
+}
+
+function getOllamaConfig() {
+  const cfg = vscode.workspace.getConfiguration('ollamaLocal');
+  const host = (cfg.get('host') || 'http://localhost:11434').replace(/\/+$/, '');
+  const model = cfg.get('model') || 'llama3.2';
+  const embeddingModel = cfg.get('embeddingModel') || '';
+  const autocompleteModel = cfg.get('autocompleteModel') || '';
+  return { host, model, embeddingModel, autocompleteModel };
+}
+
+export async function generateEmbedding(text: string): Promise<number[] | undefined> {
+  const { host, embeddingModel } = getOllamaConfig();
+  if (!embeddingModel) {
+    return undefined;
+  }
+
+  const res = await fetch(`${host}/api/embeddings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: embeddingModel,
+      prompt: text
+    })
+  });
+
+  if (!res.ok) {
+    throw new Error(`Erro ao gerar embedding (${res.status}): ${res.statusText}`);
+  }
+
+  const data = (await res.json()) as { embedding?: number[] };
+  return data.embedding;
+}
+
 function getModeSystemPrompt(mode: AssistantMode): string {
   switch (mode) {
     case 'plan':
@@ -309,6 +345,83 @@ async function collectWorkspaceEntries(
   return { folders, files };
 }
 
+class OllamaInlineCompletionProvider {
+  private lastRequestTime = 0;
+
+  public async provideInlineCompletionItems(
+    document: any,
+    position: any,
+    _context: any,
+    token: any
+  ): Promise<any[]> {
+    const { host, autocompleteModel } = getOllamaConfig();
+    if (!autocompleteModel) {
+      return [];
+    }
+
+    // Debounce simples para evitar disparos excessivos enquanto digita rápido
+    const requestTime = Date.now();
+    this.lastRequestTime = requestTime;
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    if (token.isCancellationRequested || this.lastRequestTime !== requestTime) {
+      return [];
+    }
+
+    const startLine = Math.max(0, position.line - 60);
+    const endLine = Math.min(document.lineCount - 1, position.line + 25);
+
+    const prefix = document.getText(new vscode.Range(startLine, 0, position.line, position.character));
+    const suffix = document.getText(
+      new vscode.Range(position.line, position.character, endLine, document.lineAt(endLine).text.length)
+    );
+
+    if (!prefix.trim()) {
+      return [];
+    }
+
+    const controller = new AbortController();
+    token.onCancellationRequested(() => controller.abort());
+
+    try {
+      const res = await fetch(`${host}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: autocompleteModel,
+          prompt: prefix,
+          suffix,
+          stream: false,
+          options: {
+            num_predict: 128,
+            temperature: 0.2,
+            stop: ['\n\n', '```']
+          }
+        })
+      });
+
+      if (!res.ok || token.isCancellationRequested) {
+        return [];
+      }
+
+      const data = (await res.json()) as { response?: string };
+      const suggestion = data.response || '';
+      if (!suggestion.trim()) {
+        return [];
+      }
+
+      return [
+        new vscode.InlineCompletionItem(
+          suggestion,
+          new vscode.Range(position, position)
+        )
+      ];
+    } catch {
+      return [];
+    }
+  }
+}
+
 class OllamaChatViewProvider {
   public static readonly viewType = 'ollamaChatView';
   private view?: any;
@@ -319,13 +432,6 @@ class OllamaChatViewProvider {
   private currentMode: AssistantMode = 'chat';
 
   constructor(private readonly extensionUri: any) {}
-
-  private getConfig() {
-    const cfg = vscode.workspace.getConfiguration('ollamaLocal');
-    const host = (cfg.get('host') || 'http://localhost:11434').replace(/\/+$/, '');
-    const model = cfg.get('model') || 'llama3.2';
-    return { host, model };
-  }
 
   public clearHistory() {
     if (this.abortController) {
@@ -381,10 +487,23 @@ class OllamaChatViewProvider {
             }
           }
           break;
+        case 'refreshModels':
+          await this.sendInitialState();
+          break;
         case 'selectModel':
           await vscode.workspace
             .getConfiguration('ollamaLocal')
             .update('model', msg.model, vscode.ConfigurationTarget.Global);
+          break;
+        case 'selectEmbeddingModel':
+          await vscode.workspace
+            .getConfiguration('ollamaLocal')
+            .update('embeddingModel', msg.model || '', vscode.ConfigurationTarget.Global);
+          break;
+        case 'selectAutocompleteModel':
+          await vscode.workspace
+            .getConfiguration('ollamaLocal')
+            .update('autocompleteModel', msg.model || '', vscode.ConfigurationTarget.Global);
           break;
         case 'selectMode':
           if (msg.mode === 'chat' || msg.mode === 'plan' || msg.mode === 'agent') {
@@ -440,26 +559,43 @@ class OllamaChatViewProvider {
   }
 
   private async sendInitialState() {
-    const { host, model } = this.getConfig();
-    let models: string[] = [];
+    const { host, model, embeddingModel, autocompleteModel } = getOllamaConfig();
+    let allModels: string[] = [];
     try {
       const res = await fetch(`${host}/api/tags`);
       if (res.ok) {
         const data = (await res.json()) as OllamaTagsResponse;
-        models = (data.models || []).map((m) => m.name);
+        allModels = (data.models || []).map((m) => m.name);
       }
     } catch {
       // Ollama pode estar offline
     }
 
-    if (models.length === 0 && model) {
-      models = [model];
+    const chatModels = allModels.filter((m) => !isLikelyEmbeddingModel(m));
+    const embeddingModels = allModels.filter((m) => isLikelyEmbeddingModel(m));
+
+    const effectiveChatModels = chatModels.length > 0 ? chatModels : allModels.length > 0 ? allModels : model ? [model] : [];
+    const effectiveEmbeddingModels = embeddingModels.length > 0 ? embeddingModels : allModels;
+    const effectiveAutocompleteModels = effectiveChatModels;
+
+    if (model && !effectiveChatModels.includes(model)) {
+      effectiveChatModels.unshift(model);
+    }
+    if (embeddingModel && !effectiveEmbeddingModels.includes(embeddingModel)) {
+      effectiveEmbeddingModels.unshift(embeddingModel);
+    }
+    if (autocompleteModel && !effectiveAutocompleteModels.includes(autocompleteModel)) {
+      effectiveAutocompleteModels.unshift(autocompleteModel);
     }
 
     this.view?.webview.postMessage({
       type: 'init',
-      models,
-      selectedModel: models.includes(model) ? model : models[0] || model,
+      chatModels: effectiveChatModels,
+      selectedModel: effectiveChatModels.includes(model) ? model : effectiveChatModels[0] || model,
+      embeddingModels: effectiveEmbeddingModels,
+      selectedEmbeddingModel: embeddingModel,
+      autocompleteModels: effectiveAutocompleteModels,
+      selectedAutocompleteModel: autocompleteModel,
       mode: this.currentMode
     });
   }
@@ -690,7 +826,7 @@ class OllamaChatViewProvider {
     }
 
     const effectiveText = trimmed || 'Analise o trecho de código anexado.';
-    const { host, model: defaultModel } = this.getConfig();
+    const { host, model: defaultModel } = getOllamaConfig();
     const model = chosenModel || defaultModel;
     const mode: AssistantMode =
       chosenMode === 'chat' || chosenMode === 'plan' || chosenMode === 'agent' ? chosenMode : this.currentMode;
@@ -847,14 +983,44 @@ class OllamaChatViewProvider {
       gap: 6px;
       align-items: center;
     }
+    .model-label {
+      font-size: 11px;
+      opacity: 0.8;
+      width: 74px;
+      flex-shrink: 0;
+    }
     select {
       flex: 1;
+      min-width: 0;
       background: var(--vscode-dropdown-background);
       color: var(--vscode-dropdown-foreground);
       border: 1px solid var(--vscode-dropdown-border);
       padding: 4px 6px;
       border-radius: 4px;
       outline: none;
+      font-size: 12px;
+    }
+    .icon-btn {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 4px;
+      padding: 3px 7px;
+      cursor: pointer;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .icon-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+    .extra-models {
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+      padding-top: 2px;
+    }
+    .extra-models.open {
+      display: flex;
     }
     .mode-switcher {
       display: grid;
@@ -1117,7 +1283,20 @@ class OllamaChatViewProvider {
 <body>
   <div class="topbar">
     <div class="model-row">
-      <select id="modelSelect" title="Modelo local do Ollama"></select>
+      <span class="model-label" title="Modelo principal (Chat/Plan/Agent)">Chat:</span>
+      <select id="modelSelect" title="Modelo local do Ollama para Chat/Agent"></select>
+      <button type="button" id="toggleExtraModelsBtn" class="icon-btn" title="Configurar modelos de Embedding e Autocomplete">⚙️</button>
+      <button type="button" id="refreshModelsBtn" class="icon-btn" title="Atualizar lista de modelos do Ollama">↻</button>
+    </div>
+    <div class="extra-models" id="extraModelsPanel">
+      <div class="model-row">
+        <span class="model-label" title="Modelo usado para gerar vetores/embeddings">Embedding:</span>
+        <select id="embeddingModelSelect" title="Modelo de Embedding"></select>
+      </div>
+      <div class="model-row">
+        <span class="model-label" title="Modelo usado para sugestões inline no editor">Autocomplete:</span>
+        <select id="autocompleteModelSelect" title="Modelo de Autocomplete (FIM)"></select>
+      </div>
     </div>
     <div class="mode-switcher" role="tablist" aria-label="Modo do assistente">
       <button type="button" class="mode-btn active" data-mode="chat" title="Conversa e análise de código">Chat</button>
@@ -1150,6 +1329,11 @@ class OllamaChatViewProvider {
     const sendBtn = document.getElementById('sendBtn');
     const stopBtn = document.getElementById('stopBtn');
     const modelSelect = document.getElementById('modelSelect');
+    const embeddingModelSelect = document.getElementById('embeddingModelSelect');
+    const autocompleteModelSelect = document.getElementById('autocompleteModelSelect');
+    const toggleExtraModelsBtn = document.getElementById('toggleExtraModelsBtn');
+    const refreshModelsBtn = document.getElementById('refreshModelsBtn');
+    const extraModelsPanel = document.getElementById('extraModelsPanel');
     const autocompleteEl = document.getElementById('autocomplete');
     const snippetChipsEl = document.getElementById('snippetChips');
     const modeButtons = Array.from(document.querySelectorAll('.mode-btn'));
@@ -1165,6 +1349,32 @@ class OllamaChatViewProvider {
     let acIndex = 0;
     let activeMentionStart = -1;
     let latestSearchRequestId = 0;
+
+    toggleExtraModelsBtn.addEventListener('click', () => {
+      extraModelsPanel.classList.toggle('open');
+    });
+
+    refreshModelsBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'refreshModels' });
+    });
+
+    function populateModelSelect(selectEl, models, selectedValue, allowEmptyLabel) {
+      selectEl.innerHTML = '';
+      if (allowEmptyLabel) {
+        const emptyOpt = document.createElement('option');
+        emptyOpt.value = '';
+        emptyOpt.textContent = allowEmptyLabel;
+        if (!selectedValue) emptyOpt.selected = true;
+        selectEl.appendChild(emptyOpt);
+      }
+      (models || []).forEach((m) => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        if (m === selectedValue) opt.selected = true;
+        selectEl.appendChild(opt);
+      });
+    }
 
     function renderSnippetChips() {
       snippetChipsEl.innerHTML = '';
@@ -1471,18 +1681,21 @@ class OllamaChatViewProvider {
       vscode.postMessage({ type: 'selectModel', model: modelSelect.value });
     });
 
+    embeddingModelSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'selectEmbeddingModel', model: embeddingModelSelect.value });
+    });
+
+    autocompleteModelSelect.addEventListener('change', () => {
+      vscode.postMessage({ type: 'selectAutocompleteModel', model: autocompleteModelSelect.value });
+    });
+
     window.addEventListener('message', (event) => {
       const msg = event.data;
       switch (msg.type) {
         case 'init':
-          modelSelect.innerHTML = '';
-          msg.models.forEach((m) => {
-            const opt = document.createElement('option');
-            opt.value = m;
-            opt.textContent = m;
-            if (m === msg.selectedModel) opt.selected = true;
-            modelSelect.appendChild(opt);
-          });
+          populateModelSelect(modelSelect, msg.chatModels, msg.selectedModel, null);
+          populateModelSelect(embeddingModelSelect, msg.embeddingModels, msg.selectedEmbeddingModel, '(Nenhum)');
+          populateModelSelect(autocompleteModelSelect, msg.autocompleteModels, msg.selectedAutocompleteModel, '(Desativado)');
           if (msg.mode) {
             updateModeUi(msg.mode);
           }
@@ -1667,6 +1880,7 @@ function getActiveSelectionSnippet(): CodeSnippetAttachment | undefined {
 
 export function activate(context: any) {
   const provider = new OllamaChatViewProvider(context.extensionUri);
+  const inlineProvider = new OllamaInlineCompletionProvider();
 
   const registerExplorerModeCommand = (commandId: string, mode: AssistantMode) =>
     vscode.commands.registerCommand(
@@ -1701,6 +1915,10 @@ export function activate(context: any) {
     vscode.window.registerWebviewViewProvider(OllamaChatViewProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true }
     }),
+    vscode.languages.registerInlineCompletionItemProvider(
+      { pattern: '**' },
+      inlineProvider
+    ),
     vscode.commands.registerCommand('ollamaLocal.clearChat', () => {
       provider.clearHistory();
     }),

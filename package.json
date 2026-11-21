@@ -125,15 +125,20 @@
     "configuration": {
       "title": "Ollama Local Chat",
       "properties": {
-        "ollamaLocal.host": {
-          "type": "string",
-          "default": "http://localhost:11434",
-          "description": "URL base do servidor local do Ollama"
-        },
         "ollamaLocal.model": {
           "type": "string",
-          "default": "llama3.2",
-          "description": "Modelo padrão do Ollama"
+          "default": "qwen3:8b",
+          "description": "Modelo padrão do Ollama para Chat, Plan e Agent."
+        },
+        "ollamaLocal.embeddingModel": {
+          "type": "string",
+          "default": "nomic-embed-text",
+          "description": "Modelo do Ollama usado para gerar embeddings."
+        },
+        "ollamaLocal.autocompleteModel": {
+          "type": "string",
+          "default": "",
+          "description": "Modelo do Ollama usado para autocomplete inline no editor (deixe vazio para desativar)."
         }
       }
     }
