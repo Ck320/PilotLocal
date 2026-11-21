@@ -1,81 +1,151 @@
 {
-    "name": "ollama-local-chat",
-    "displayName": "Ollama Local Chat",
-    "description": "Chat local com modelos Ollama e menção de arquivos via @ no VSCodium",
-    "version": "0.2.0",
-    "engines": {
-        "vscode": "^1.85.0"
-    },
-    "categories": [
-        "AI",
-        "Chat"
-    ],
-    "activationEvents": [],
-    "main": "./out/extension.js",
-    "contributes": {
-        "viewsContainers": {
-            "activitybar": [
-                {
-                    "id": "ollama-chat-sidebar",
-                    "title": "Ollama Chat",
-                    "icon": "$(comment-discussion)"
-                }
-            ]
-        },
-        "views": {
-            "ollama-chat-sidebar": [
-                {
-                    "type": "webview",
-                    "id": "ollamaChatView",
-                    "name": "Chat Local"
-                }
-            ]
-        },
-        "commands": [
-            {
-                "command": "ollamaLocal.clearChat",
-                "title": "Ollama: Limpar Histórico do Chat",
-                "icon": "$(clear-all)"
-            }
-        ],
-        "menus": {
-            "view/title": [
-                {
-                    "command": "ollamaLocal.clearChat",
-                    "when": "view == ollamaChatView",
-                    "group": "navigation"
-                }
-            ]
-        },
-        "configuration": {
-            "title": "Ollama Local Chat",
-            "properties": {
-                "ollamaLocal.host": {
-                    "type": "string",
-                    "default": "http://localhost:11434",
-                    "description": "URL base do servidor local do Ollama"
-                },
-                "ollamaLocal.model": {
-                    "type": "string",
-                    "default": "qwen3:8b",
-                    "description": "Modelo padrão do Ollama"
-                },
-                "ollamaLocal.embeddingModel": {
-                    "type": "string",
-                    "default": "nomic-embed-text:latest",
-                    "description": "Modelo local do Ollama usado para embeddings e busca semântica nos arquivos"
-                }
-            }
+  "name": "ollama-local-chat",
+  "displayName": "Ollama Local Chat",
+  "description": "Chat local com modelos Ollama e menção de arquivos via @ no VSCodium",
+  "version": "0.3.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ollama-chat-sidebar",
+          "title": "Ollama Chat",
+          "icon": "$(comment-discussion)"
         }
+      ]
     },
-    "scripts": {
-        "vscode:prepublish": "npm run compile",
-        "compile": "tsc -p ./",
-        "watch": "tsc -watch -p ./"
+    "views": {
+      "ollama-chat-sidebar": [
+        {
+          "type": "webview",
+          "id": "ollamaChatView",
+          "name": "Chat Local"
+        }
+      ]
     },
-    "devDependencies": {
-        "@types/node": "^20.19.43",
-        "@types/vscode": "^1.85.0",
-        "typescript": "^5.4.0"
+    "commands": [
+      {
+        "command": "ollamaLocal.clearChat",
+        "title": "Ollama: Limpar Histórico do Chat",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "ollamaLocal.addResourceToChat",
+        "title": "Ollama: Adicionar ao Chat"
+      },
+      {
+        "command": "ollamaLocal.addResourceToPlan",
+        "title": "Ollama: Adicionar ao Plan"
+      },
+      {
+        "command": "ollamaLocal.addResourceToAgent",
+        "title": "Ollama: Adicionar ao Agent"
+      },
+      {
+        "command": "ollamaLocal.addSelectionToChat",
+        "title": "Ollama: Enviar Trecho para Chat"
+      },
+      {
+        "command": "ollamaLocal.addSelectionToPlan",
+        "title": "Ollama: Enviar Trecho para Plan"
+      },
+      {
+        "command": "ollamaLocal.addSelectionToAgent",
+        "title": "Ollama: Enviar Trecho para Agent"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "ollamaLocal.explorerSubmenu",
+        "label": "Ollama Local"
+      },
+      {
+        "id": "ollamaLocal.editorSubmenu",
+        "label": "Ollama Local"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "ollamaLocal.clearChat",
+          "when": "view == ollamaChatView",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "submenu": "ollamaLocal.explorerSubmenu",
+          "group": "navigation@100"
+        }
+      ],
+      "ollamaLocal.explorerSubmenu": [
+        {
+          "command": "ollamaLocal.addResourceToChat",
+          "group": "1_modes@1"
+        },
+        {
+          "command": "ollamaLocal.addResourceToPlan",
+          "group": "1_modes@2"
+        },
+        {
+          "command": "ollamaLocal.addResourceToAgent",
+          "group": "1_modes@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "submenu": "ollamaLocal.editorSubmenu",
+          "when": "editorHasSelection",
+          "group": "navigation@100"
+        }
+      ],
+      "ollamaLocal.editorSubmenu": [
+        {
+          "command": "ollamaLocal.addSelectionToChat",
+          "group": "1_modes@1"
+        },
+        {
+          "command": "ollamaLocal.addSelectionToPlan",
+          "group": "1_modes@2"
+        },
+        {
+          "command": "ollamaLocal.addSelectionToAgent",
+          "group": "1_modes@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Ollama Local Chat",
+      "properties": {
+        "ollamaLocal.host": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "URL base do servidor local do Ollama"
+        },
+        "ollamaLocal.model": {
+          "type": "string",
+          "default": "llama3.2",
+          "description": "Modelo padrão do Ollama"
+        }
+      }
     }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
 }
