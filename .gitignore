@@ -27,3 +27,4 @@ Thumbs.db
 # Dados de teste / caches locais
 .vscode-test/
 coverage/
+.vsix
