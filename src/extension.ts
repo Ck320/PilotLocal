@@ -1,5 +1,9 @@
-import * as vscode from 'vscode';
 import * as path from 'path';
+import { getMarkdownStyles, getMarkdownClientScript } from './markdownFormatter';
+
+// Carrega a API do VSCodium/VS Code em tempo de execução sem depender de @types/vscode na compilação
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const vscode: any = require('vscode');
 
 type AssistantMode = 'chat' | 'plan' | 'agent';
 
@@ -80,48 +84,112 @@ function getModeSystemPrompt(mode: AssistantMode): string {
     case 'agent':
       return (
         'Você está no modo AGENT. Resolva a solicitação de forma prática e completa com base nos arquivos/pastas/trechos fornecidos. ' +
-        'Sempre que criar ou modificar um arquivo, retorne o conteúdo atualizado dentro de um bloco exatamente neste formato:\n' +
-        '```file:caminho/relativo/do/arquivo.ext\n<código completo do arquivo>\n```'
+        'Sempre que criar ou modificar um arquivo, VOCÊ DEVE incluir o conteúdo completo do arquivo dentro de um bloco exatamente neste formato:\n' +
+        '```file:caminho/relativo/do/arquivo.ext\n<código completo do arquivo, sem omitir partes>\n```\n' +
+        'Não apenas mostre trechos soltos no texto quando o objetivo for criar ou atualizar arquivos.'
       );
     case 'chat':
     default:
       return (
         'Você está no modo CHAT. Responda de forma clara, técnica e objetiva com base no histórico ' +
-        'e nos arquivos/pastas/trechos referenciados. Se o usuário pedir alterações em um arquivo específico, você pode ' +
-        'incluir um bloco ```file:caminho/relativo/do/arquivo.ext```.'
+        'e nos arquivos/pastas/trechos referenciados. Se o usuário pedir para criar ou alterar um arquivo, ' +
+        'use o formato ```file:caminho/relativo/do/arquivo.ext```.'
       );
   }
 }
 
+function normalizeRelativeFilePath(rawPath: string): string {
+  return rawPath
+    .trim()
+    .replace(/^['"`]+|['"`]+$/g, '')
+    .replace(/^(?:\/\/|#|\/\*|--)\s*/, '')
+    .replace(/\s*\*\/$/, '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\/+/, '')
+    .replace(/^\/+/, '');
+}
+
+function resolveSafeWorkspacePath(workspaceRoot: string, relativePath: string): string | undefined {
+  if (!workspaceRoot) {
+    return undefined;
+  }
+
+  const cleanPath = normalizeRelativeFilePath(relativePath);
+  const parts = cleanPath.split('/').filter(Boolean);
+
+  if (parts.length === 0 || parts.includes('..')) {
+    return undefined;
+  }
+
+  const normalizedRoot = path.resolve(workspaceRoot);
+  const normalizedTarget = path.resolve(normalizedRoot, ...parts);
+
+  if (
+    normalizedTarget !== normalizedRoot &&
+    !normalizedTarget.startsWith(normalizedRoot + path.sep)
+  ) {
+    return undefined;
+  }
+
+  return normalizedTarget;
+}
+
 function extractProposedEdits(text: string): ProposedFileEdit[] {
-  const edits: ProposedFileEdit[] = [];
-  const regex = /```file:([^\r\n`]+)\r?\n([\s\S]*?)```/g;
+  const editsByPath = new Map<string, string>();
+  const fenceRegex = /```([^\r\n`]*)\r?\n([\s\S]*?)```/g;
   let match: RegExpExecArray | null;
 
-  while ((match = regex.exec(text)) !== null) {
-    const filePath = match[1].trim();
+  while ((match = fenceRegex.exec(text)) !== null) {
+    const infoString = (match[1] || '').trim();
     const content = match[2].replace(/\r?\n$/, '');
-    if (filePath) {
-      edits.push({ filePath, content });
+
+    // 1. Formato explícito: ```file:caminho/do/arquivo.ext
+    const filePrefixMatch = infoString.match(/^file:(.+)$/i);
+    if (filePrefixMatch) {
+      const cleanPath = normalizeRelativeFilePath(filePrefixMatch[1]);
+      if (cleanPath && !cleanPath.split('/').includes('..')) {
+        editsByPath.set(cleanPath, content);
+      }
+      continue;
+    }
+
+    // 2. Fallback: ```ts src/foo.ts ou ```python # src/foo.py (exige extensão clara)
+    const tokens = infoString.split(/\s+/).filter(Boolean);
+    const candidateToken = tokens.slice(1).join(' ') || tokens[0] || '';
+    const candidatePath = normalizeRelativeFilePath(candidateToken);
+    const hasFileExtension = /^[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,10}$/.test(candidatePath);
+
+    if (hasFileExtension && !candidatePath.split('/').includes('..')) {
+      editsByPath.set(candidatePath, content);
     }
   }
 
-  return edits;
+  return Array.from(editsByPath.entries()).map(([filePath, content]) => ({
+    filePath,
+    content
+  }));
 }
 
-function getTargetFileUri(relativePath: string): vscode.Uri | undefined {
+function getTargetFileUri(relativePath: string): any | undefined {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
     return undefined;
   }
-  const cleanPath = relativePath.replace(/^[/\\]+/, '');
-  return vscode.Uri.joinPath(folders[0].uri, ...cleanPath.split(/[/\\]/));
+
+  const rootUri = folders[0].uri;
+  const safeFsPath = resolveSafeWorkspacePath(rootUri.fsPath, relativePath);
+  if (!safeFsPath) {
+    vscode.window.showWarningMessage(`Caminho inválido ou fora do workspace ignorado: ${relativePath}`);
+    return undefined;
+  }
+
+  return vscode.Uri.file(safeFsPath);
 }
 
 async function openDiffPreview(relativePath: string, newContent: string) {
   const targetUri = getTargetFileUri(relativePath);
   if (!targetUri) {
-    vscode.window.showErrorMessage('Nenhuma pasta aberta no workspace.');
+    vscode.window.showErrorMessage('Nenhuma pasta aberta no workspace ou caminho inválido.');
     return;
   }
 
@@ -158,7 +226,7 @@ async function openDiffPreview(relativePath: string, newContent: string) {
 async function applyFileEdit(relativePath: string, newContent: string, showNotification = true): Promise<boolean> {
   const targetUri = getTargetFileUri(relativePath);
   if (!targetUri) {
-    vscode.window.showErrorMessage('Nenhuma pasta aberta no workspace.');
+    vscode.window.showErrorMessage('Nenhuma pasta aberta no workspace ou caminho inválido.');
     return false;
   }
 
@@ -197,19 +265,19 @@ async function applyFileEdit(relativePath: string, newContent: string, showNotif
 }
 
 async function collectWorkspaceEntries(
-  rootUri: vscode.Uri,
+  rootUri: any,
   maxDepth = 5,
   maxEntries = 600
 ): Promise<{ folders: string[]; files: string[] }> {
   const folders: string[] = [];
   const files: string[] = [];
 
-  async function walk(currentUri: vscode.Uri, prefix: string, depth: number) {
+  async function walk(currentUri: any, prefix: string, depth: number) {
     if (depth > maxDepth || folders.length + files.length >= maxEntries) {
       return;
     }
 
-    let entries: [string, vscode.FileType][];
+    let entries: [string, number][];
     try {
       entries = await vscode.workspace.fs.readDirectory(currentUri);
     } catch {
@@ -241,21 +309,21 @@ async function collectWorkspaceEntries(
   return { folders, files };
 }
 
-class OllamaChatViewProvider implements vscode.WebviewViewProvider {
+class OllamaChatViewProvider {
   public static readonly viewType = 'ollamaChatView';
-  private view?: vscode.WebviewView;
+  private view?: any;
   private isWebviewReady = false;
   private pendingPayloads: PendingComposerPayload[] = [];
   private history: ChatMessage[] = [];
   private abortController?: AbortController;
   private currentMode: AssistantMode = 'chat';
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(private readonly extensionUri: any) {}
 
   private getConfig() {
     const cfg = vscode.workspace.getConfiguration('ollamaLocal');
-    const host = (cfg.get<string>('host') || 'http://localhost:11434').replace(/\/+$/, '');
-    const model = cfg.get<string>('model') || 'llama3.2';
+    const host = (cfg.get('host') || 'http://localhost:11434').replace(/\/+$/, '');
+    const model = cfg.get('model') || 'llama3.2';
     return { host, model };
   }
 
@@ -282,7 +350,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  public resolveWebviewView(webviewView: vscode.WebviewView) {
+  public resolveWebviewView(webviewView: any) {
     this.view = webviewView;
     this.isWebviewReady = false;
 
@@ -298,7 +366,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
       this.view = undefined;
     });
 
-    webviewView.webview.onDidReceiveMessage(async (msg) => {
+    webviewView.webview.onDidReceiveMessage(async (msg: any) => {
       switch (msg.type) {
         case 'ready':
           this.isWebviewReady = true;
@@ -457,7 +525,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async readFileForContext(fileUri: vscode.Uri, relPath: string): Promise<string | undefined> {
+  private async readFileForContext(fileUri: any, relPath: string): Promise<string | undefined> {
     try {
       const bytes = await vscode.workspace.fs.readFile(fileUri);
       let content = new TextDecoder('utf-8').decode(bytes);
@@ -478,7 +546,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 
   private async resolveSingleMention(
     rawToken: string,
-    rootUri: vscode.Uri,
+    rootUri: any,
     allWorkspaceFiles: string[],
     alreadyIncluded: Set<string>,
     totalCharsRef: { count: number }
@@ -574,7 +642,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (uniqueTokens.length > 0 && workspaceFolders && workspaceFolders.length > 0) {
       const rootUri = workspaceFolders[0].uri;
-      const uris = await vscode.workspace.findFiles('**/*', EXCLUDE_GLOB, 500);
+      const uris: any[] = await vscode.workspace.findFiles('**/*', EXCLUDE_GLOB, 500);
       const allWorkspaceFiles = uris.map((u) => vscode.workspace.asRelativePath(u, false).replace(/\\/g, '/'));
 
       const alreadyIncluded = new Set<string>();
@@ -745,6 +813,8 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 
   private getHtml(): string {
     const nonce = String(Date.now());
+    const markdownStyles = getMarkdownStyles();
+    const markdownScript = getMarkdownClientScript();
 
     return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -819,7 +889,6 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
       padding: 8px 10px;
       border-radius: 6px;
       line-height: 1.45;
-      white-space: pre-wrap;
       word-break: break-word;
     }
     .msg.user {
@@ -827,6 +896,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
       color: var(--vscode-button-secondaryForeground);
       align-self: flex-end;
       max-width: 94%;
+      white-space: pre-wrap;
     }
     .msg.assistant {
       background: var(--vscode-editor-background);
@@ -836,6 +906,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     .msg.error {
       border-color: var(--vscode-inputValidation-errorBorder);
       background: var(--vscode-inputValidation-errorBackground);
+      white-space: pre-wrap;
     }
     .msg-header {
       display: flex;
@@ -1040,6 +1111,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
       opacity: 0.6;
       cursor: default;
     }
+    ${markdownStyles}
   </style>
 </head>
 <body>
@@ -1070,6 +1142,8 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 
   <script nonce="${nonce}">
+    ${markdownScript}
+
     const vscode = acquireVsCodeApi();
     const messagesEl = document.getElementById('messages');
     const promptInput = document.getElementById('promptInput');
@@ -1085,6 +1159,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     let attachedSnippets = [];
     let currentAssistantEl = null;
     let currentAssistantTextEl = null;
+    let currentAssistantRawText = '';
     let isGenerating = false;
     let acItems = [];
     let acIndex = 0;
@@ -1448,6 +1523,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 
         case 'assistantStart':
           isGenerating = true;
+          currentAssistantRawText = '';
           sendBtn.style.display = 'none';
           stopBtn.style.display = 'inline-block';
           currentAssistantEl = document.createElement('div');
@@ -1462,6 +1538,7 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
           currentAssistantEl.appendChild(header);
 
           currentAssistantTextEl = document.createElement('div');
+          currentAssistantTextEl.className = 'md-content';
           currentAssistantTextEl.textContent = '...';
           currentAssistantEl.appendChild(currentAssistantTextEl);
           messagesEl.appendChild(currentAssistantEl);
@@ -1470,10 +1547,8 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 
         case 'assistantChunk':
           if (currentAssistantTextEl) {
-            if (currentAssistantTextEl.textContent === '...') {
-              currentAssistantTextEl.textContent = '';
-            }
-            currentAssistantTextEl.textContent += msg.chunk;
+            currentAssistantRawText += msg.chunk || '';
+            currentAssistantTextEl.innerHTML = renderMarkdownToHtml(currentAssistantRawText);
             scrollToBottom();
           }
           break;
@@ -1499,11 +1574,16 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
         case 'assistantError':
           if (currentAssistantEl && currentAssistantTextEl) {
             currentAssistantEl.classList.add('error');
+            currentAssistantTextEl.classList.remove('md-content');
             currentAssistantTextEl.textContent = msg.error;
           }
           break;
 
         case 'assistantEnd':
+          if (currentAssistantTextEl && currentAssistantRawText) {
+            currentAssistantTextEl.innerHTML = renderMarkdownToHtml(currentAssistantRawText);
+          }
+          currentAssistantRawText = '';
           isGenerating = false;
           sendBtn.style.display = 'inline-block';
           stopBtn.style.display = 'none';
@@ -1525,8 +1605,8 @@ class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 }
 
 async function resolveUrisToMentions(
-  primaryUri?: vscode.Uri,
-  selectedUris?: vscode.Uri[]
+  primaryUri?: any,
+  selectedUris?: any[]
 ): Promise<string[]> {
   const targets =
     Array.isArray(selectedUris) && selectedUris.length > 0
@@ -1585,13 +1665,13 @@ function getActiveSelectionSnippet(): CodeSnippetAttachment | undefined {
   };
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export function activate(context: any) {
   const provider = new OllamaChatViewProvider(context.extensionUri);
 
   const registerExplorerModeCommand = (commandId: string, mode: AssistantMode) =>
     vscode.commands.registerCommand(
       commandId,
-      async (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+      async (primaryUri?: any, selectedUris?: any[]) => {
         const mentions = await resolveUrisToMentions(primaryUri, selectedUris);
         if (mentions.length === 0) {
           vscode.window.showWarningMessage('Nenhum arquivo ou pasta válido selecionado.');
