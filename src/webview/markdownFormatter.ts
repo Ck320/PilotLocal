@@ -91,7 +91,7 @@ export function getMarkdownStyles(): string {
 
 export function getMarkdownClientScript(): string {
   return `
-    function escapeHtml(str) {
+    function escapeMdHtml(str) {
       return String(str)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -100,8 +100,7 @@ export function getMarkdownClientScript(): string {
         .replace(/'/g, '&#39;');
     }
 
-    function formatInlineMarkdown(escapedText) {
-      // Inline code primeiro para não formatar ** ou * dentro de crases
+    function formatMdInline(escapedText) {
       const codeTokens = [];
       let text = escapedText.replace(/\`([^\`]+)\`/g, (_, code) => {
         const token = '@@INLINECODE_' + codeTokens.length + '@@';
@@ -109,17 +108,13 @@ export function getMarkdownClientScript(): string {
         return token;
       });
 
-      // Links [texto](url)
       text = text.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-
-      // Negrito e itálico
       text = text.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
       text = text.replace(/__([^_]+)__/g, '<strong>$1</strong>');
       text = text.replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<em>$2</em>');
       text = text.replace(/(^|[^_])_([^_\\n]+)_(?!_)/g, '$1<em>$2</em>');
       text = text.replace(/~~([^~]+)~~/g, '<del>$1</del>');
 
-      // Restaura inline code
       codeTokens.forEach((html, idx) => {
         text = text.replace('@@INLINECODE_' + idx + '@@', html);
       });
@@ -127,7 +122,7 @@ export function getMarkdownClientScript(): string {
       return text;
     }
 
-    function renderTextBlocks(rawSegment) {
+    function renderMdBlocks(rawSegment) {
       const lines = rawSegment.split(/\\r?\\n/);
       const htmlParts = [];
       let inUl = false;
@@ -161,7 +156,6 @@ export function getMarkdownClientScript(): string {
           continue;
         }
 
-        // Linha horizontal
         if (/^(-{3,}|\\*{3,}|_{3,})$/.test(trimmed)) {
           flushParagraph();
           closeLists();
@@ -169,26 +163,23 @@ export function getMarkdownClientScript(): string {
           continue;
         }
 
-        // Headings (#, ##, ###, ####)
         const headingMatch = trimmed.match(/^(#{1,4})\\s+(.*)$/);
         if (headingMatch) {
           flushParagraph();
           closeLists();
           const level = headingMatch[1].length;
-          htmlParts.push('<h' + level + '>' + formatInlineMarkdown(escapeHtml(headingMatch[2])) + '</h' + level + '>');
+          htmlParts.push('<h' + level + '>' + formatMdInline(escapeMdHtml(headingMatch[2])) + '</h' + level + '>');
           continue;
         }
 
-        // Blockquote (> ...)
         const quoteMatch = trimmed.match(/^>\\s?(.*)$/);
         if (quoteMatch) {
           flushParagraph();
           closeLists();
-          htmlParts.push('<blockquote>' + formatInlineMarkdown(escapeHtml(quoteMatch[1])) + '</blockquote>');
+          htmlParts.push('<blockquote>' + formatMdInline(escapeMdHtml(quoteMatch[1])) + '</blockquote>');
           continue;
         }
 
-        // Lista não ordenada (- ou *)
         const ulMatch = trimmed.match(/^[-*+]\\s+(.*)$/);
         if (ulMatch) {
           flushParagraph();
@@ -200,11 +191,10 @@ export function getMarkdownClientScript(): string {
             htmlParts.push('<ul>');
             inUl = true;
           }
-          htmlParts.push('<li>' + formatInlineMarkdown(escapeHtml(ulMatch[1])) + '</li>');
+          htmlParts.push('<li>' + formatMdInline(escapeMdHtml(ulMatch[1])) + '</li>');
           continue;
         }
 
-        // Lista ordenada (1. ...)
         const olMatch = trimmed.match(/^\\d+\\.\\s+(.*)$/);
         if (olMatch) {
           flushParagraph();
@@ -216,12 +206,12 @@ export function getMarkdownClientScript(): string {
             htmlParts.push('<ol>');
             inOl = true;
           }
-          htmlParts.push('<li>' + formatInlineMarkdown(escapeHtml(olMatch[1])) + '</li>');
+          htmlParts.push('<li>' + formatMdInline(escapeMdHtml(olMatch[1])) + '</li>');
           continue;
         }
 
         closeLists();
-        paragraphBuffer.push(formatInlineMarkdown(escapeHtml(rawLine)));
+        paragraphBuffer.push(formatMdInline(escapeMdHtml(rawLine)));
       }
 
       flushParagraph();
@@ -231,8 +221,6 @@ export function getMarkdownClientScript(): string {
 
     function renderMarkdownToHtml(markdownText) {
       if (!markdownText) return '';
-
-      // Separa blocos cercados por \`\`\` (inclusive bloco aberto durante streaming)
       const parts = String(markdownText).split(/(\`\`\`[^\\r\\n\`]*\\r?\\n[\\s\\S]*?(?:\`\`\`|$))/g);
       let output = '';
 
@@ -248,26 +236,22 @@ export function getMarkdownClientScript(): string {
           }
           codeBody = codeBody.replace(/\\r?\\n$/, '');
 
-          const label = escapeHtml(headerRaw || 'código');
-          const escapedCode = escapeHtml(codeBody);
-
           output +=
             '<div class="md-code-block">' +
               '<div class="md-code-header">' +
-                '<span>' + label + '</span>' +
+                '<span>' + escapeMdHtml(headerRaw || 'código') + '</span>' +
                 '<button type="button" class="md-copy-btn">Copiar</button>' +
               '</div>' +
-              '<pre><code>' + escapedCode + '</code></pre>' +
+              '<pre><code>' + escapeMdHtml(codeBody) + '</code></pre>' +
             '</div>';
         } else {
-          output += renderTextBlocks(part);
+          output += renderMdBlocks(part);
         }
       }
 
       return output;
     }
 
-    // Delegação global para botões "Copiar" dentro de blocos de código
     document.addEventListener('click', (e) => {
       const btn = e.target && e.target.closest ? e.target.closest('.md-copy-btn') : null;
       if (!btn) return;
